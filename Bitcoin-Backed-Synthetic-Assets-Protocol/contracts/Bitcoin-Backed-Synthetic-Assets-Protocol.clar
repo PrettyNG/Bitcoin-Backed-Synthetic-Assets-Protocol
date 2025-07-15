@@ -712,3 +712,82 @@
     )
   )
 )
+
+;; Cancel a limit order
+(define-public (cancel-limit-order (order-id uint))
+  (begin
+    (match (map-get? limit-orders { order-id: order-id })
+      order-data
+      (begin
+        ;; Check that the order belongs to the sender or is expired
+        (asserts! (or 
+                    (is-eq tx-sender (get owner order-data))
+                    (>= stacks-block-height (get expiration order-data))
+                  ) ERR-NOT-AUTHORIZED)
+        
+        ;; Check that the order is still open
+        (asserts! (is-eq (get status order-data) "open") ERR-LIMIT-ORDER-INVALID)
+        
+        ;; In a real implementation, this would release any locked funds back to the owner
+        
+        ;; Update order status
+        (map-set limit-orders
+          { order-id: order-id }
+          (merge order-data { status: "cancelled" })
+        )
+        
+        (ok true)
+      )
+      ERR-LIMIT-ORDER-INVALID
+    )
+  )
+)
+
+;; Execute a limit order - this would typically be called by keepers or automated systems
+(define-public (execute-limit-order (order-id uint))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    
+    (match (map-get? limit-orders { order-id: order-id })
+      order-data
+      (begin
+        ;; Check that the order is still open and not expired
+        (asserts! (is-eq (get status order-data) "open") ERR-LIMIT-ORDER-INVALID)
+        (asserts! (< stacks-block-height (get expiration order-data)) ERR-LIMIT-ORDER-INVALID)
+        
+        (match (map-get? trading-pairs { pair-id: (get pair-id order-data) })
+          pair-data
+          (begin
+            (asserts! (get is-active pair-data) ERR-TRADING-PAIR-NOT-FOUND)
+            
+            (let
+              (
+                (current-price (/ (* (get reserve-b pair-data) PRECISION-FACTOR) (get reserve-a pair-data)))
+              )
+              ;; Check if the price conditions are met
+              (asserts! (if (get is-buy order-data)
+                          (<= current-price (get price order-data)) ;; For buy orders, current price must be <= limit price
+                          (>= current-price (get price order-data)) ;; For sell orders, current price must be >= limit price
+                        ) ERR-LIMIT-ORDER-INVALID)
+              
+              ;; In a real implementation, this would execute the swap and update balances
+              
+              ;; Update order status
+              (map-set limit-orders
+                { order-id: order-id }
+                (merge order-data { 
+                  status: "filled",
+                  filled-amount: (get amount order-data)
+                })
+              )
+              
+              (ok true)
+            )
+          )
+          ERR-TRADING-PAIR-NOT-FOUND
+        )
+      )
+      ERR-LIMIT-ORDER-INVALID
+    )
+  )
+)
