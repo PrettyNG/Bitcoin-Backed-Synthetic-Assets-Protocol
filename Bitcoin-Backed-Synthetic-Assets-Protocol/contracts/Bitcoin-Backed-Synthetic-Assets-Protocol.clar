@@ -480,3 +480,93 @@
   )
 )
 
+;; Calculate price based on constant product formula (x * y = k)
+(define-private (calculate-output-amount (input-amount uint) (input-reserve uint) (output-reserve uint) (fee uint))
+  (let
+    (
+      (input-with-fee (* input-amount (- u10000 fee)))
+      (numerator (* input-with-fee output-reserve))
+      (denominator (+ (* input-reserve u10000) input-with-fee))
+    )
+    (/ numerator denominator)
+  )
+)
+
+;; Swap assets
+(define-public (swap (pair-id uint) (input-is-a bool) (input-amount uint) (min-output-amount uint))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> input-amount u0) ERR-INVALID-AMOUNT)
+    
+    (match (map-get? trading-pairs { pair-id: pair-id })
+      pair-data
+      (begin
+        (asserts! (get is-active pair-data) ERR-TRADING-PAIR-NOT-FOUND)
+        
+        (let
+          (
+            (input-reserve (if input-is-a (get reserve-a pair-data) (get reserve-b pair-data)))
+            (output-reserve (if input-is-a (get reserve-b pair-data) (get reserve-a pair-data)))
+            (input-asset-id (if input-is-a (get asset-a-id pair-data) (get asset-b-id pair-data)))
+            (output-asset-id (if input-is-a (get asset-b-id pair-data) (get asset-a-id pair-data)))
+            (output-amount (calculate-output-amount input-amount input-reserve output-reserve (get fee pair-data)))
+          )
+          ;; Check if output meets minimum requirements
+          (asserts! (>= output-amount min-output-amount) ERR-SWAP-SLIPPAGE-EXCEEDED)
+          
+          ;; In a real implementation, this would transfer the input asset from the sender
+          ;; and transfer the output asset to the sender
+          ;; For this example, we're just updating the reserves
+          
+          ;; Update reserves
+          (map-set trading-pairs
+            { pair-id: pair-id }
+            (merge pair-data {
+              reserve-a: (if input-is-a 
+                          (+ (get reserve-a pair-data) input-amount)
+                          (- (get reserve-a pair-data) output-amount)),
+              reserve-b: (if input-is-a
+                          (- (get reserve-b pair-data) output-amount)
+                          (+ (get reserve-b pair-data) input-amount))
+            })
+          )
+          
+          (ok output-amount)
+        )
+      )
+      ERR-TRADING-PAIR-NOT-FOUND
+    )
+  )
+)
+
+;; Add liquidity to a pair
+(define-public (add-liquidity (pair-id uint) (amount-a uint) (amount-b uint))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> amount-a u0) ERR-INVALID-AMOUNT)
+    (asserts! (> amount-b u0) ERR-INVALID-AMOUNT)
+    
+    (match (map-get? trading-pairs { pair-id: pair-id })
+      pair-data
+      (begin
+        (asserts! (get is-active pair-data) ERR-TRADING-PAIR-NOT-FOUND)
+        
+        ;; In a real implementation, this would transfer the input assets from the sender
+        ;; For this example, we're just updating the reserves
+        
+        ;; Update reserves
+        (map-set trading-pairs
+          { pair-id: pair-id }
+          (merge pair-data {
+            reserve-a: (+ (get reserve-a pair-data) amount-a),
+            reserve-b: (+ (get reserve-b pair-data) amount-b)
+          })
+        )
+        
+        (ok true)
+      )
+      ERR-TRADING-PAIR-NOT-FOUND
+    )
+  )
+)
+
