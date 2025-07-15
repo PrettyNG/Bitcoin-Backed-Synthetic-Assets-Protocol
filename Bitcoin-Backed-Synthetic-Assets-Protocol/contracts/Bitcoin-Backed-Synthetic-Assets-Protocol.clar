@@ -158,3 +158,48 @@
   )
 )
 
+(define-private (is-oracle (address principal))
+  ;; In a production system, this would check against a list of approved oracles
+  ;; For simplicity, we're just checking if it's the governance address
+  (is-eq address (var-get governance-address))
+)
+
+(define-private (get-price (asset-id uint))
+  (match (map-get? asset-prices { asset-id: asset-id })
+    price-data (begin
+      (asserts! (< (- stacks-block-height (get last-update price-data)) ORACLE-PRICE-EXPIRY) ERR-PRICE-EXPIRED)
+      (ok (get price price-data))
+    )
+    ERR-ORACLE-DATA-UNAVAILABLE
+  )
+)
+
+(define-private (get-btc-price)
+  ;; For simplicity, we're using asset-id 0 as BTC
+  (get-price u0)
+)
+
+(define-private (is-asset-supported (asset-id uint))
+  (match (map-get? supported-assets { asset-id: asset-id })
+    asset-data (get is-active asset-data)
+    false
+  )
+)
+
+;; New data variables
+(define-data-var last-yield-distribution uint u0)
+(define-data-var yield-fee-percentage uint u20) ;; 2% default yield fee
+(define-data-var total-staked-tokens uint u0)
+(define-data-var proposal-counter uint u0)
+
+;; New data maps for additional features
+;; Staking system
+(define-map staked-balances
+  { owner: principal }
+  {
+    amount: uint,
+    lock-until: uint,
+    accumulated-yield: uint,
+    last-claim: uint
+  }
+)
