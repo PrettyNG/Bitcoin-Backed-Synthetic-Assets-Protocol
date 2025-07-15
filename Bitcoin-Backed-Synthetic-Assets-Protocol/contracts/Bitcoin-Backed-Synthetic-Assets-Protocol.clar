@@ -272,3 +272,44 @@
     ))
   )
 )
+
+;; Enhanced oracle price update - requires authorization
+(define-public (update-price (asset-id uint) (price uint))
+  (begin
+    (match (map-get? authorized-oracles { address: tx-sender })
+      oracle-data
+      (begin
+        (asserts! (get is-active oracle-data) ERR-NOT-AUTHORIZED)
+        (asserts! (> price u0) ERR-INVALID-AMOUNT)
+        
+        ;; Check if oracle is authorized for this asset type
+        (asserts! (is-some (index-of (get asset-types oracle-data) asset-id)) ERR-NOT-AUTHORIZED)
+        
+        (ok (map-set asset-prices
+          { asset-id: asset-id }
+          {
+            price: price,
+            last-update: stacks-block-height,
+            source: tx-sender
+          }
+        ))
+      )
+      ERR-NOT-AUTHORIZED
+    )
+  )
+)
+
+
+;; Get the current price with validation
+(define-public (query-price (asset-id uint))
+  (begin
+    (match (map-get? asset-prices { asset-id: asset-id })
+      price-data
+      (begin
+        (asserts! (< (- stacks-block-height (get last-update price-data)) ORACLE-PRICE-EXPIRY) ERR-PRICE-EXPIRED)
+        (ok (get price price-data))
+      )
+      ERR-ORACLE-DATA-UNAVAILABLE
+    )
+  )
+)
