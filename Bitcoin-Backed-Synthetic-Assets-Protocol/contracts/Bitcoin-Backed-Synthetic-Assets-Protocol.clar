@@ -113,3 +113,48 @@
     (ok (var-set protocol-paused false))
   )
 )
+
+(define-public (add-supported-asset (asset-id uint) (name (string-ascii 24)) (max-supply uint) (collateral-ratio uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get governance-address)) ERR-NOT-AUTHORIZED)
+    (asserts! (>= collateral-ratio MIN-COLLATERALIZATION-RATIO) ERR-INVALID-AMOUNT)
+    (ok (map-set supported-assets 
+      { asset-id: asset-id } 
+      { 
+        name: name, 
+        is-active: true, 
+        max-supply: max-supply, 
+        current-supply: u0, 
+        collateral-ratio: collateral-ratio 
+      }
+    ))
+  )
+)
+
+(define-public (update-asset-status (asset-id uint) (is-active bool))
+  (begin
+    (asserts! (is-eq tx-sender (var-get governance-address)) ERR-NOT-AUTHORIZED)
+    (match (map-get? supported-assets { asset-id: asset-id })
+      asset-data (ok (map-set supported-assets 
+        { asset-id: asset-id } 
+        (merge asset-data { is-active: is-active })
+      ))
+      ERR-ASSET-NOT-SUPPORTED
+    )
+  )
+)
+
+(define-public (update-collateral-ratio (asset-id uint) (new-ratio uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get governance-address)) ERR-NOT-AUTHORIZED)
+    (asserts! (>= new-ratio MIN-COLLATERALIZATION-RATIO) ERR-INVALID-AMOUNT)
+    (match (map-get? supported-assets { asset-id: asset-id })
+      asset-data (ok (map-set supported-assets 
+        { asset-id: asset-id } 
+        (merge asset-data { collateral-ratio: new-ratio })
+      ))
+      ERR-ASSET-NOT-SUPPORTED
+    )
+  )
+)
+
