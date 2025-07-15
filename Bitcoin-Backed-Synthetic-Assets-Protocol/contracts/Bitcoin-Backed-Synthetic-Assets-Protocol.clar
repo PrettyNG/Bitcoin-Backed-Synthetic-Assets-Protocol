@@ -353,3 +353,23 @@
     (ok (var-get insurance-fund-balance))
   )
 )
+
+(define-public (file-insurance-claim (asset-id uint) (amount uint))
+  (begin
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (let ((claim-id (var-get claim-counter)))
+      (var-set claim-counter (+ claim-id u1))
+      (map-set insurance-claims 
+        { claim-id: claim-id }
+        {
+          claimant: tx-sender,
+          asset-id: asset-id,
+          amount: amount,
+          status: "pending",
+          timestamp: stacks-block-height
+        }
+      )
+      (ok claim-id)
+    )
+  )
+)
