@@ -313,3 +313,43 @@
     )
   )
 )
+
+(define-constant ERR-INSURANCE-CLAIM-REJECTED (err u1013))
+(define-constant ERR-REFERRAL-NOT-FOUND (err u1014))
+(define-constant ERR-TRADING-PAIR-NOT-FOUND (err u1015))
+(define-constant ERR-FLASH-LOAN-FAILED (err u1016))
+(define-constant ERR-VAULT-LOCKED (err u1017))
+(define-constant ERR-INSUFFICIENT-BALANCE (err u1018))
+(define-constant ERR-SWAP-SLIPPAGE-EXCEEDED (err u1019))
+(define-constant ERR-LIMIT-ORDER-INVALID (err u1020))
+(define-constant ERR-NFT-COLLATERAL-INVALID (err u1021))
+(define-constant ERR-YIELD-FARM-NOT-FOUND (err u1022))
+
+;; Insurance fund to cover bad debt from liquidations
+(define-data-var insurance-fund-balance uint u0)
+(define-data-var insurance-premium-rate uint u2) ;; 0.2% premium
+(define-data-var insurance-coverage-ratio uint u80) ;; 80% coverage
+
+(define-map insurance-claims 
+  { claim-id: uint }
+  {
+    claimant: principal,
+    asset-id: uint,
+    amount: uint,
+    status: (string-ascii 10), ;; "pending", "approved", "rejected"
+    timestamp: uint
+  }
+)
+
+(define-data-var claim-counter uint u0)
+
+;; Contribute to insurance fund
+(define-public (contribute-to-insurance-fund (amount uint))
+  (begin
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    ;; In a real implementation, this would transfer STX from tx-sender to the contract
+    ;; For this example, we're just incrementing the fund balance
+    (var-set insurance-fund-balance (+ (var-get insurance-fund-balance) amount))
+    (ok (var-get insurance-fund-balance))
+  )
+)
