@@ -649,3 +649,66 @@
     )
   )
 )
+
+(define-map limit-orders
+  { order-id: uint }
+  {
+    owner: principal,
+    pair-id: uint,
+    is-buy: bool, ;; true = buy asset-a with asset-b, false = sell asset-a for asset-b
+    amount: uint,
+    price: uint, ;; in terms of asset-b per asset-a * PRECISION_FACTOR
+    filled-amount: uint,
+    status: (string-ascii 10), ;; "open", "filled", "cancelled"
+    expiration: uint
+  }
+)
+
+(define-data-var order-counter uint u0)
+
+;; Create a limit order
+(define-public (create-limit-order (pair-id uint) (is-buy bool) (amount uint) (price uint) (expiration uint))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (> price u0) ERR-INVALID-AMOUNT)
+    (asserts! (> expiration stacks-block-height) ERR-INVALID-AMOUNT)
+    
+    (match (map-get? trading-pairs { pair-id: pair-id })
+      pair-data
+      (begin
+        (asserts! (get is-active pair-data) ERR-TRADING-PAIR-NOT-FOUND)
+        
+        (let
+          (
+            (order-id (var-get order-counter))
+            (required-balance (* amount price))
+          )
+          ;; In a real implementation, this would check that the user has the required balance
+          ;; and lock the funds for the duration of the order
+          
+          ;; Create the order
+          (map-set limit-orders
+            { order-id: order-id }
+            {
+              owner: tx-sender,
+              pair-id: pair-id,
+              is-buy: is-buy,
+              amount: amount,
+              price: price,
+              filled-amount: u0,
+              status: "open",
+              expiration: expiration
+            }
+          )
+          
+          ;; Increment order counter
+          (var-set order-counter (+ order-id u1))
+          
+          (ok order-id)
+        )
+      )
+      ERR-TRADING-PAIR-NOT-FOUND
+    )
+  )
+)
