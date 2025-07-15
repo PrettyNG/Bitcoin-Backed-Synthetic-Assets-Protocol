@@ -373,3 +373,421 @@
     )
   )
 )
+
+;; Review an insurance claim - governance only
+(define-public (review-insurance-claim (claim-id uint) (approve bool))
+  (begin
+    (asserts! (is-eq tx-sender (var-get governance-address)) ERR-NOT-AUTHORIZED)
+    
+    (match (map-get? insurance-claims { claim-id: claim-id })
+      claim-data
+      (begin
+        (if approve
+          (begin
+            ;; Calculate payout amount based on coverage ratio
+            (let 
+              (
+                (payout-amount (/ (* (get amount claim-data) (var-get insurance-coverage-ratio)) u100))
+              )
+              ;; Check if insurance fund has enough balance
+              (asserts! (<= payout-amount (var-get insurance-fund-balance)) ERR-INSUFFICIENT-COLLATERAL)
+              
+              ;; Update insurance fund balance
+              (var-set insurance-fund-balance (- (var-get insurance-fund-balance) payout-amount))
+              
+              ;; In a real implementation, this would transfer the payout to the claimant
+              ;; For this example, we're just updating the claim status
+              
+              ;; Update claim status
+              (map-set insurance-claims
+                { claim-id: claim-id }
+                (merge claim-data { status: "approved" })
+              )
+              
+              (ok payout-amount)
+            )
+          )
+          (begin
+            ;; Reject the claim
+            (map-set insurance-claims
+              { claim-id: claim-id }
+              (merge claim-data { status: "rejected" })
+            )
+            (ok u0)
+          )
+        )
+      )
+      ERR-INSURANCE-CLAIM-REJECTED
+    )
+  )
+)
+
+;; Get insurance fund details
+(define-public (get-insurance-fund-info)
+  (ok {
+    balance: (var-get insurance-fund-balance),
+    premium-rate: (var-get insurance-premium-rate),
+    coverage-ratio: (var-get insurance-coverage-ratio)
+  })
+)
+
+;; Define trading pairs
+(define-map trading-pairs
+  { pair-id: uint }
+  {
+    asset-a-id: uint,
+    asset-b-id: uint,
+    reserve-a: uint,
+    reserve-b: uint,
+    fee: uint, ;; in basis points (1/100 of a percent)
+    is-active: bool
+  }
+)
+
+(define-data-var pair-counter uint u0)
+
+;; Create a new trading pair
+(define-public (create-trading-pair (asset-a-id uint) (asset-b-id uint) (fee uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get governance-address)) ERR-NOT-AUTHORIZED)
+    (asserts! (is-asset-supported asset-a-id) ERR-ASSET-NOT-SUPPORTED)
+    (asserts! (is-asset-supported asset-b-id) ERR-ASSET-NOT-SUPPORTED)
+    (asserts! (not (is-eq asset-a-id asset-b-id)) ERR-INVALID-AMOUNT)
+    (asserts! (<= fee u1000) ERR-INVALID-AMOUNT) ;; Max fee of 10%
+    
+    (let 
+      (
+        (pair-id (var-get pair-counter))
+      )
+      ;; Create the pair
+      (map-set trading-pairs
+        { pair-id: pair-id }
+        {
+          asset-a-id: asset-a-id,
+          asset-b-id: asset-b-id,
+          reserve-a: u0,
+          reserve-b: u0,
+          fee: fee,
+          is-active: true
+        }
+      )
+      
+      ;; Increment pair counter
+      (var-set pair-counter (+ pair-id u1))
+      
+      (ok pair-id)
+    )
+  )
+)
+
+;; Calculate price based on constant product formula (x * y = k)
+(define-private (calculate-output-amount (input-amount uint) (input-reserve uint) (output-reserve uint) (fee uint))
+  (let
+    (
+      (input-with-fee (* input-amount (- u10000 fee)))
+      (numerator (* input-with-fee output-reserve))
+      (denominator (+ (* input-reserve u10000) input-with-fee))
+    )
+    (/ numerator denominator)
+  )
+)
+
+;; Swap assets
+(define-public (swap (pair-id uint) (input-is-a bool) (input-amount uint) (min-output-amount uint))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> input-amount u0) ERR-INVALID-AMOUNT)
+    
+    (match (map-get? trading-pairs { pair-id: pair-id })
+      pair-data
+      (begin
+        (asserts! (get is-active pair-data) ERR-TRADING-PAIR-NOT-FOUND)
+        
+        (let
+          (
+            (input-reserve (if input-is-a (get reserve-a pair-data) (get reserve-b pair-data)))
+            (output-reserve (if input-is-a (get reserve-b pair-data) (get reserve-a pair-data)))
+            (input-asset-id (if input-is-a (get asset-a-id pair-data) (get asset-b-id pair-data)))
+            (output-asset-id (if input-is-a (get asset-b-id pair-data) (get asset-a-id pair-data)))
+            (output-amount (calculate-output-amount input-amount input-reserve output-reserve (get fee pair-data)))
+          )
+          ;; Check if output meets minimum requirements
+          (asserts! (>= output-amount min-output-amount) ERR-SWAP-SLIPPAGE-EXCEEDED)
+          
+          ;; In a real implementation, this would transfer the input asset from the sender
+          ;; and transfer the output asset to the sender
+          ;; For this example, we're just updating the reserves
+          
+          ;; Update reserves
+          (map-set trading-pairs
+            { pair-id: pair-id }
+            (merge pair-data {
+              reserve-a: (if input-is-a 
+                          (+ (get reserve-a pair-data) input-amount)
+                          (- (get reserve-a pair-data) output-amount)),
+              reserve-b: (if input-is-a
+                          (- (get reserve-b pair-data) output-amount)
+                          (+ (get reserve-b pair-data) input-amount))
+            })
+          )
+          
+          (ok output-amount)
+        )
+      )
+      ERR-TRADING-PAIR-NOT-FOUND
+    )
+  )
+)
+
+;; Add liquidity to a pair
+(define-public (add-liquidity (pair-id uint) (amount-a uint) (amount-b uint))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> amount-a u0) ERR-INVALID-AMOUNT)
+    (asserts! (> amount-b u0) ERR-INVALID-AMOUNT)
+    
+    (match (map-get? trading-pairs { pair-id: pair-id })
+      pair-data
+      (begin
+        (asserts! (get is-active pair-data) ERR-TRADING-PAIR-NOT-FOUND)
+        
+        ;; In a real implementation, this would transfer the input assets from the sender
+        ;; For this example, we're just updating the reserves
+        
+        ;; Update reserves
+        (map-set trading-pairs
+          { pair-id: pair-id }
+          (merge pair-data {
+            reserve-a: (+ (get reserve-a pair-data) amount-a),
+            reserve-b: (+ (get reserve-b pair-data) amount-b)
+          })
+        )
+        
+        (ok true)
+      )
+      ERR-TRADING-PAIR-NOT-FOUND
+    )
+  )
+)
+
+;; Flash loan data
+(define-map flash-loans
+  { loan-id: uint }
+  {
+    borrower: principal,
+    asset-id: uint,
+    amount: uint,
+    fee: uint,
+    is-active: bool,
+    timestamp: uint
+  }
+)
+
+(define-data-var flash-loan-counter uint u0)
+(define-data-var flash-loan-fee-rate uint u9) ;; 0.09% fee
+
+;; Execute a flash loan
+(define-public (flash-loan (asset-id uint) (amount uint) (callback-contract principal) (callback-function (string-ascii 128)))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (is-asset-supported asset-id) ERR-ASSET-NOT-SUPPORTED)
+    
+    (let
+      (
+        (loan-id (var-get flash-loan-counter))
+        (loan-fee (/ (* amount (var-get flash-loan-fee-rate)) u10000))
+      )
+      ;; Check if there's enough liquidity
+      (match (map-get? liquidity-pools { asset-id: asset-id })
+        pool-data
+        (begin
+          (asserts! (>= (get synthetic-balance pool-data) amount) ERR-POOL-INSUFFICIENT-LIQUIDITY)
+          
+          ;; Create the flash loan
+          (map-set flash-loans
+            { loan-id: loan-id }
+            {
+              borrower: tx-sender,
+              asset-id: asset-id,
+              amount: amount,
+              fee: loan-fee,
+              is-active: true,
+              timestamp: stacks-block-height
+            }
+          )
+          
+          ;; Increment loan counter
+          (var-set flash-loan-counter (+ loan-id u1))
+          
+          ;; In a real implementation, this would:
+          ;; 1. Transfer the borrowed assets to the borrower
+          ;; 2. Call the callback function on the callback contract
+          ;; 3. Verify that the borrowed amount + fee has been repaid
+          ;; 4. If not repaid, revert the transaction
+          
+          ;; For this example, we're just updating the loan status
+          (map-set flash-loans
+            { loan-id: loan-id }
+            {
+              borrower: tx-sender,
+              asset-id: asset-id,
+              amount: amount,
+              fee: loan-fee,
+              is-active: false,
+              timestamp: stacks-block-height
+            }
+          )
+          
+          ;; Add the fee to the protocol fees
+          (var-set total-protocol-fees (+ (var-get total-protocol-fees) loan-fee))
+          
+          (ok loan-id)
+        )
+        ERR-POOL-INSUFFICIENT-LIQUIDITY
+      )
+    )
+  )
+)
+
+(define-map limit-orders
+  { order-id: uint }
+  {
+    owner: principal,
+    pair-id: uint,
+    is-buy: bool, ;; true = buy asset-a with asset-b, false = sell asset-a for asset-b
+    amount: uint,
+    price: uint, ;; in terms of asset-b per asset-a * PRECISION_FACTOR
+    filled-amount: uint,
+    status: (string-ascii 10), ;; "open", "filled", "cancelled"
+    expiration: uint
+  }
+)
+
+(define-data-var order-counter uint u0)
+
+;; Create a limit order
+(define-public (create-limit-order (pair-id uint) (is-buy bool) (amount uint) (price uint) (expiration uint))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (> price u0) ERR-INVALID-AMOUNT)
+    (asserts! (> expiration stacks-block-height) ERR-INVALID-AMOUNT)
+    
+    (match (map-get? trading-pairs { pair-id: pair-id })
+      pair-data
+      (begin
+        (asserts! (get is-active pair-data) ERR-TRADING-PAIR-NOT-FOUND)
+        
+        (let
+          (
+            (order-id (var-get order-counter))
+            (required-balance (* amount price))
+          )
+          ;; In a real implementation, this would check that the user has the required balance
+          ;; and lock the funds for the duration of the order
+          
+          ;; Create the order
+          (map-set limit-orders
+            { order-id: order-id }
+            {
+              owner: tx-sender,
+              pair-id: pair-id,
+              is-buy: is-buy,
+              amount: amount,
+              price: price,
+              filled-amount: u0,
+              status: "open",
+              expiration: expiration
+            }
+          )
+          
+          ;; Increment order counter
+          (var-set order-counter (+ order-id u1))
+          
+          (ok order-id)
+        )
+      )
+      ERR-TRADING-PAIR-NOT-FOUND
+    )
+  )
+)
+
+;; Cancel a limit order
+(define-public (cancel-limit-order (order-id uint))
+  (begin
+    (match (map-get? limit-orders { order-id: order-id })
+      order-data
+      (begin
+        ;; Check that the order belongs to the sender or is expired
+        (asserts! (or 
+                    (is-eq tx-sender (get owner order-data))
+                    (>= stacks-block-height (get expiration order-data))
+                  ) ERR-NOT-AUTHORIZED)
+        
+        ;; Check that the order is still open
+        (asserts! (is-eq (get status order-data) "open") ERR-LIMIT-ORDER-INVALID)
+        
+        ;; In a real implementation, this would release any locked funds back to the owner
+        
+        ;; Update order status
+        (map-set limit-orders
+          { order-id: order-id }
+          (merge order-data { status: "cancelled" })
+        )
+        
+        (ok true)
+      )
+      ERR-LIMIT-ORDER-INVALID
+    )
+  )
+)
+
+;; Execute a limit order - this would typically be called by keepers or automated systems
+(define-public (execute-limit-order (order-id uint))
+  (begin
+    (asserts! (not (var-get protocol-paused)) ERR-NOT-AUTHORIZED)
+    
+    (match (map-get? limit-orders { order-id: order-id })
+      order-data
+      (begin
+        ;; Check that the order is still open and not expired
+        (asserts! (is-eq (get status order-data) "open") ERR-LIMIT-ORDER-INVALID)
+        (asserts! (< stacks-block-height (get expiration order-data)) ERR-LIMIT-ORDER-INVALID)
+        
+        (match (map-get? trading-pairs { pair-id: (get pair-id order-data) })
+          pair-data
+          (begin
+            (asserts! (get is-active pair-data) ERR-TRADING-PAIR-NOT-FOUND)
+            
+            (let
+              (
+                (current-price (/ (* (get reserve-b pair-data) PRECISION-FACTOR) (get reserve-a pair-data)))
+              )
+              ;; Check if the price conditions are met
+              (asserts! (if (get is-buy order-data)
+                          (<= current-price (get price order-data)) ;; For buy orders, current price must be <= limit price
+                          (>= current-price (get price order-data)) ;; For sell orders, current price must be >= limit price
+                        ) ERR-LIMIT-ORDER-INVALID)
+              
+              ;; In a real implementation, this would execute the swap and update balances
+              
+              ;; Update order status
+              (map-set limit-orders
+                { order-id: order-id }
+                (merge order-data { 
+                  status: "filled",
+                  filled-amount: (get amount order-data)
+                })
+              )
+              
+              (ok true)
+            )
+          )
+          ERR-TRADING-PAIR-NOT-FOUND
+        )
+      )
+      ERR-LIMIT-ORDER-INVALID
+    )
+  )
+)
